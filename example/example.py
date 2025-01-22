@@ -19,44 +19,124 @@ DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE
 OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 """
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+from minsnap_trajectories.minimum_snap import *
 
 import matplotlib.pyplot as plt
 import numpy as np
 
-import minsnap_trajectories as ms
-
-
 def main():
+    # refs = [
+    #     Waypoint(
+    #         time=0.0,
+    #         position=np.array([0.0, 0.0, 10.0]),
+    #     ),
+    #     Waypoint(  # Any higher-order derivatives
+    #         time=8.0,
+    #         position=np.array([10.0, 0.0, 10.0]),
+    #         velocity=np.array([0.0, 5.0, 0.0]),
+    #         acceleration=np.array([0.1, 0.0, 0.0]),
+    #     ),
+    #     Waypoint(  # Potentially leave intermediate-order derivatives unspecified
+    #         time=16.0,
+    #         position=np.array([20.0, 0.0, 10.0]),
+    #         jerk=np.array([0.1, 0.0, 0.2]),
+    #     ),
+    # ]
     refs = [
-        ms.Waypoint(
+        Waypoint(
             time=0.0,
-            position=np.array([0.0, 0.0, 10.0]),
+            position=np.array([0.0, 0.0, 1.0]),
         ),
-        ms.Waypoint(  # Any higher-order derivatives
-            time=8.0,
-            position=np.array([10.0, 0.0, 10.0]),
-            velocity=np.array([0.0, 5.0, 0.0]),
-            acceleration=np.array([0.1, 0.0, 0.0]),
+        Waypoint(  # Any higher-order derivatives
+            time=2.75*0.25,
+            position=np.array([0.5, 0.0, 1.4]),
+            # velocity=np.array([0.0, 5.0, 0.0]),
+            # acceleration=np.array([0.1, 0.0, 0.0]),
         ),
-        ms.Waypoint(  # Potentially leave intermediate-order derivatives unspecified
-            time=16.0,
-            position=np.array([20.0, 0.0, 10.0]),
-            jerk=np.array([0.1, 0.0, 0.2]),
+        Waypoint(  # Potentially leave intermediate-order derivatives unspecified
+            time=2.75*0.5,
+            position=np.array([1.0, 0.0, 1.0]),
+        ),
+        Waypoint(  # Potentially leave intermediate-order derivatives unspecified
+            time=2.75*0.75,
+            position=np.array([0.5, 0.0, 0.6]),
+        ),
+        Waypoint(  # Potentially leave intermediate-order derivatives unspecified
+            time=2.75,
+            position=np.array([0.0, 0.0, 1.0]),
+            velocity=np.array([-1.14239733, 0., 1.14239733])
+            # jerk=np.array([0.1, 0.0, 0.2]),
         ),
     ]
 
-    polys = ms.generate_trajectory(
+    waypoint_time = [it.time for it in refs]
+    print(waypoint_time)
+    # exit()
+
+    polys = generate_trajectory(
         refs,
-        degree=8,  # Polynomial degree
+        degree=5,  # Polynomial degree
         idx_minimized_orders=(3, 4),  # Minimize derivatives in these orders (>= 2)
         num_continuous_orders=3,  # Constrain continuity of derivatives up to order (>= 3)
-        algorithm="closed-form",  # Or "constrained"
+        # algorithm="closed-form",  # Or "constrained"
+        algorithm="constrained", 
     )
-
-    t = np.linspace(0, 16, 100)
+    max_time = waypoint_time[-1]
+    t = np.linspace(0, max_time, 100)
     #  Sample up to the 3rd order (acceleration) -----v
-    pva = ms.compute_trajectory_derivatives(polys, t, 3)
-    position, *_ = pva
+    pva = compute_trajectory_derivatives(polys, t, 3)
+    position, velocity, acceleration = pva
+    
+    # plot x, z velocity, acceleration
+    fig, axs = plt.subplots(3, 1, figsize=(5, 6))
+    speed = np.linalg.norm(velocity, axis=1)
+    acc_mag = np.linalg.norm(acceleration, axis=1)
+    axs[0].plot(t, speed)
+    axs[0].set_ylabel("Speed (m/s)")
+    axs[1].plot(t, acc_mag)
+    # axs[1].axhline(4, color="r", linestyle="--")
+    axs[1].set_ylabel("total acc magnitude (m/s^2)")
+    # plot x, z acceleration
+    axs[2].set_ylabel("acc (m/s^2)")
+    axs[2].plot(t, acceleration[:, 0], label="x")
+    axs[2].plot(t, acceleration[:, 2], label="z")
+    axs[2].legend()
+    for time in waypoint_time:
+        axs[2].axhline(2, color="r", linestyle="-")
+        axs[2].axhline(-2, color="r", linestyle="-")
+    for time in waypoint_time:
+        for ax in axs:
+            ax.axvline(time, color="gray", linestyle="--")
+    
+    
+    fig.tight_layout()
+    try:
+        fig.savefig("example/minsnap_trajectories_example_speed_acc.png")
+    except FileNotFoundError:
+        plt.show()
+    
+    # plot 2D xz path
+    fig, ax = plt.subplots()
+    ax.plot(position[:, 0], position[:, 2], label="Position Trajectory")
+    for i, ref in enumerate(refs):
+        ax.plot(ref.position[0], ref.position[2], "ro")
+    ax.quiver(
+        *refs[-1].position[[0, 2]],
+        *refs[-1].velocity[[0, 2]],
+        color="g",
+        label="Velocity specified at the last waypoint",
+    )
+    ax.set_xlabel("X (m)")
+    ax.set_ylabel("Z (m)")
+    ax.legend(loc="upper right")
+    fig.tight_layout()
+    try:
+        fig.savefig("example/minsnap_trajectories_example_xz.png")
+    except FileNotFoundError:
+        plt.show()
 
     fig, ax = plt.subplots(subplot_kw={"projection": "3d"}, figsize=(5, 4))
     ax.plot(position[:, 0], position[:, 1], position[:, 2], label="Position Trajectory")
@@ -70,12 +150,12 @@ def main():
         label="Position Waypoints",
     )
     ax.quiver(
-        *refs[1].position,
-        *refs[1].velocity,
+        *refs[-1].position,
+        *refs[-1].velocity,
         color="g",
         label="Velocity specified at waypoint 1",
     )
-    ax.set_zlim(8, 12)
+    ax.set_zlim(0, 2)
     ax.set_xlabel("X (m)")
     ax.set_ylabel("Y (m)")
     ax.set_zlabel("Z (m)")
