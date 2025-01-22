@@ -300,6 +300,10 @@ def generate_trajectory(
             f" {degree}-degree only"
         )
     t_ref, refs = _parse_references(references, num_continuous_orders)
+    '''
+    refs: np.ndarray, shape=(n_refs, r_cts, dim)
+    dim: dimension of the trajectory = num of continuous orders
+    '''
 
     if (t_ref < 0.0).any():
         raise ValueError("Waypoint timestamp is negative")
@@ -311,7 +315,12 @@ def generate_trajectory(
 
     poly_dim = PolynomialSize(
         n_poly=refs.shape[0] - 1, n_cfs=degree + 1, dim=refs.shape[2]
-    )
+    ) 
+    '''
+    n_poly: num of segments = num of references - 1
+    n_cfs: num of coefficients = degree + 1
+    dim: dimension of the trajectory (x y z) 
+    '''
 
     if algorithm == "constrained":
         solver = _solve_constrained
@@ -454,6 +463,20 @@ def _solve_constrained(
     r_cts,
     optimize_options,
 ):
+    '''
+    # reminder: 
+    n_poly: num of segments = num of references - 1
+    n_cfs: num of coefficients = degree + 1
+    dim: dimension of the trajectory (x y z)
+    '''
+    '''
+    refs: np.ndarray, shape=(n_refs, r_cts, dim)
+    durations: np.ndarray, shape=(n_refs-1,)
+    poly_dim: PolynomialSize object (n_poly, n_cfs, dim)
+    derivative_weights: np.ndarray, shape=(n_cfs,)
+    r_cts: num of continuous orders
+    optimize_options: dict
+    '''
     opts = {"method": "SLSQP", "tol": 1e-10}
     if optimize_options is not None:
         opts.update(optimize_options)
@@ -463,8 +486,9 @@ def _solve_constrained(
         Q += c_r * la.block_diag(*_compute_Q(poly_dim.n_cfs, r, durations))
 
     poly_coeffs = np.zeros(poly_dim)
-    Aeq_1, beq_1 = _compute_continuity_constraints(poly_dim, durations, r_cts)
-    for d in range(poly_dim.dim):
+    # for the continuity at the waypoints
+    Aeq_1, beq_1 = _compute_continuity_constraints(poly_dim, durations, r_cts) 
+    for d in range(poly_dim.dim): # for each dimension (x y z)
         Aeq_0, beq_0 = _compute_dynamical_constraints(
             poly_dim, refs[:, :, d], durations
         )
@@ -473,6 +497,15 @@ def _solve_constrained(
         beq = np.concatenate([beq_0, beq_1])
 
         constr = optimize.LinearConstraint(Aeq, beq, beq)  # type: ignore
+
+        Aineq, bineq_ub, bineq_lb = _compute_acceleration_constraints(
+            poly_dim, refs[:, :, d], durations, (-2, 2)
+        )
+        Aeq = np.vstack([Aeq, Aineq])
+        bineq_ub = np.concatenate([beq, bineq_ub])
+        bineq_lb = np.concatenate([beq, bineq_lb])
+        constr = optimize.LinearConstraint(Aeq, bineq_lb, bineq_ub)  # type: ignore
+
         soln = optimize.minimize(
             lambda x: (x @ Q @ x) / 2,
             np.zeros(n_vars),
@@ -488,13 +521,21 @@ def _solve_constrained(
 
 
 def _compute_continuity_constraints(poly_dim, durations, r_cts):
-    n_vars = poly_dim.n_poly * poly_dim.n_cfs
-    Aeq = np.zeros(((poly_dim.n_poly - 1) * r_cts, n_vars))
+    '''
+    compute the continuity constraints for the trajectory
+
+    Args:
+        poly_dim: PolynomialSize object (n_poly, n_cfs, dim)
+        durations: np.ndarray, shape=(n_refs-1,)
+        r_cts: int, num of continuous orders
+    '''
+    n_vars = poly_dim.n_poly * poly_dim.n_cfs # num of coefficients = (num segments) * (degree + 1)
+    Aeq = np.zeros(((poly_dim.n_poly - 1) * r_cts, n_vars)) # num of constraints = (num segments - 1) * num of continuous orders
     beq = np.zeros((poly_dim.n_poly - 1) * r_cts)
-    for i in range(poly_dim.n_poly - 1):
-        s = np.s_[poly_dim.n_cfs * i : poly_dim.n_cfs * (i + 2)]
-        for r in range(r_cts):
-            tvec_l = _compute_tvec(poly_dim.n_cfs, r, 1) / durations[i] ** r
+    for i in range(poly_dim.n_poly - 1): # for the conectiion points between segments
+        s = np.s_[poly_dim.n_cfs * i : poly_dim.n_cfs * (i + 2)] # get the slice for each order
+        for r in range(r_cts): # for the continuous orders
+            tvec_l = _compute_tvec(poly_dim.n_cfs, r, 1) / durations[i] ** r # normalized by the time order
             tvec_r = _compute_tvec(poly_dim.n_cfs, r, 0) / durations[i + 1] ** r
             Aeq[r_cts * i + r, s] = np.concatenate([tvec_l, -tvec_r])
 
@@ -502,21 +543,47 @@ def _compute_continuity_constraints(poly_dim, durations, r_cts):
 
 
 def _compute_dynamical_constraints(poly_dim, refs, durations):
+    '''
+    compute the waypoints constraints for the trajectory (position, velocity, acceleration, etc.)
+
+    Args:
+        poly_dim: PolynomialSize object (n_poly, n_cfs, dim)
+        refs: np.ndarray (waypoints, r_cts, dim(x,y,z)
+        durations: np.ndarray, shape=(n_refs-1,)
+    '''
     n_vars = poly_dim.n_poly * poly_dim.n_cfs
-    n_constrain_orders = np.count_nonzero(~np.isnan(refs), axis=1)
+    n_constrain_orders = np.count_nonzero(~np.isnan(refs), axis=1) # highest order constraints for each waypoint
     Aeq = np.zeros((n_constrain_orders.sum(), n_vars))
     beq = np.zeros(n_constrain_orders.sum())
 
-    row_its = np.concatenate([[0], n_constrain_orders.cumsum()])
-    for i in range(poly_dim.n_poly + 1):
+    row_its = np.concatenate([[0], n_constrain_orders.cumsum()]) # get the position of the constraints start poins
+    for i in range(poly_dim.n_poly + 1): # loop for each waypoint
         idx, tau = (i - 1, 1.0) if i == poly_dim.n_poly else (i, 0.0)
-        s = np.s_[poly_dim.n_cfs * idx : poly_dim.n_cfs * (1 + idx)]
-        for r in range(n_constrain_orders[i]):
+        s = np.s_[poly_dim.n_cfs * idx : poly_dim.n_cfs * (1 + idx)] 
+        for r in range(n_constrain_orders[i]): # loop for each order of the constraints
             Aeq[row_its[i] + r, s] = (
                 _compute_tvec(poly_dim.n_cfs, r, tau) / durations[idx] ** r
             )
             beq[row_its[i] + r] = refs[i, r]
     return Aeq, beq
+
+def _compute_acceleration_constraints(poly_dim, refs, durations, acc_limits):
+    '''
+    compute the inequality constraint to limit the acceleration at waypoints
+    '''
+    acc_min, acc_max = acc_limits
+    n_vars = poly_dim.n_poly * poly_dim.n_cfs
+    # n_constrain_orders = 3 
+    Aineq = np.zeros((poly_dim.n_poly, n_vars))
+    bineq_ub = np.zeros(poly_dim.n_poly)
+    bineq_lb = np.zeros(poly_dim.n_poly)
+
+    for i in range(poly_dim.n_poly):
+        s = np.s_[poly_dim.n_cfs * i : poly_dim.n_cfs * (i + 1)]
+        Aineq[i, s] = _compute_tvec(poly_dim.n_cfs, 2, 1) / durations[i] ** 2
+        bineq_ub[i] = acc_max
+        bineq_lb[i] = acc_min
+    return Aineq, bineq_ub, bineq_lb
 
 
 def _compute_Q(n_cfs, r, tau):  # pylint: disable=C0103
@@ -534,6 +601,14 @@ def _compute_Q(n_cfs, r, tau):  # pylint: disable=C0103
 
 
 def _compute_tvec(n_cfs, r, tau):
+    '''
+    Compute the vector of monomials for a given order and time
+    
+    Args:
+        n_cfs: int, number of coefficients = degree + 1
+        r: int, order of the derivative (0 for position, 1 for velocity, etc.)
+        tau: float, time (0 for start, 1 for end)
+    '''
     tvec = np.zeros(n_cfs)
     n_seq = np.arange(r, n_cfs)
     r_seq = np.arange(0, r)[:, None]
