@@ -74,7 +74,7 @@ def main():
 
     waypoint_time = [it.time for it in refs]
     print(waypoint_time)
-    # exit()
+
 
     polys = generate_trajectory(
         refs,
