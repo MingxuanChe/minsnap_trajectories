@@ -272,7 +272,11 @@ def generate_trajectory(
     num_continuous_orders=3,
     algorithm="closed-form",
     optimize_options=None,
+    acc_limits=(-np.inf, np.inf), 
 ):
+    if algorithm == "closed-form":
+        print("Using closed-form solver, acceleration limits will be ignored")
+    
     if degree < 2:
         raise ValueError("Polynomial degree too low")
 
@@ -324,18 +328,27 @@ def generate_trajectory(
 
     if algorithm == "constrained":
         solver = _solve_constrained
+        polys = solver(
+            refs,
+            durations,
+            poly_dim,
+            derivative_weights,
+            num_continuous_orders,
+            optimize_options,
+            acc_limits,
+        )
     elif algorithm == "closed-form":
         solver = _solve_closed_form
+        polys = solver(
+            refs,
+            durations,
+            poly_dim,
+            derivative_weights,
+            num_continuous_orders,
+            optimize_options,
+        )
     else:
         raise ValueError("Unrecognized algorithm")
-    polys = solver(
-        refs,
-        durations,
-        poly_dim,
-        derivative_weights,
-        num_continuous_orders,
-        optimize_options,
-    )
     return PiecewisePolynomialTrajectory(t_ref, durations, polys)
 
 
@@ -462,6 +475,7 @@ def _solve_constrained(
     derivative_weights,
     r_cts,
     optimize_options,
+    acc_limits=(-np.inf, np.inf), 
 ):
     '''
     # reminder: 
@@ -476,6 +490,7 @@ def _solve_constrained(
     derivative_weights: np.ndarray, shape=(n_cfs,)
     r_cts: num of continuous orders
     optimize_options: dict
+    acc_limits: tuple, (min, max) acceleration limits
     '''
     opts = {"method": "SLSQP", "tol": 1e-10}
     if optimize_options is not None:
@@ -495,11 +510,10 @@ def _solve_constrained(
 
         Aeq = np.vstack([Aeq_0, Aeq_1])
         beq = np.concatenate([beq_0, beq_1])
-
-        constr = optimize.LinearConstraint(Aeq, beq, beq)  # type: ignore
+        # constr = optimize.LinearConstraint(Aeq, beq, beq)  # type: ignore
 
         Aineq, bineq_ub, bineq_lb = _compute_acceleration_constraints(
-            poly_dim, refs[:, :, d], durations, (-2, 2)
+            poly_dim, refs[:, :, d], durations, acc_limits
         )
         Aeq = np.vstack([Aeq, Aineq])
         bineq_ub = np.concatenate([beq, bineq_ub])

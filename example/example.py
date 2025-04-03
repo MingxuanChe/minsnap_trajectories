@@ -83,6 +83,7 @@ def main():
         num_continuous_orders=3,  # Constrain continuity of derivatives up to order (>= 3)
         # algorithm="closed-form",  # Or "constrained"
         algorithm="constrained", 
+        acc_limits=(-2, 2),  # Acceleration limits
     )
     max_time = waypoint_time[-1]
     t = np.linspace(0, max_time, 100)
